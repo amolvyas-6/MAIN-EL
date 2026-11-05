@@ -34,13 +34,34 @@ cmake --build build --config RelWithDebInfo -j 8
 Do not use GCC 16 for this project. Keep parallel builds at `-j 8` or lower
 because CUDA compilation is memory intensive on this laptop.
 
-## Pending live version capture
+## Live version capture
 
-Live `nvidia-smi`, `nvcc --version`, and `gcc --version` output has not yet
-been pasted into this project record. Before Phase 0 is accepted, run the
-environment-capture command supplied in the Phase 0 handoff and paste its
-output. The pasted output will be recorded here verbatim enough to identify
-the driver, GPU name, CUDA compiler, and compiler version.
+The human ran the following command on 2026-11-05 from the project terminal:
+
+```bash
+nvidia-smi --query-gpu=name,driver_version,memory.total,temperature.gpu,pstate --format=csv,noheader
+nvcc --version
+gcc --version
+```
+
+Reported output:
+
+```text
+NVIDIA GeForce RTX 3070 Ti Laptop GPU, 615.78.08, 8192 MiB, 41, P0
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2026 NVIDIA Corporation
+Built on Tue_Sep_01_08:45:21_PDT_2026
+Cuda compilation tools, release 13.4, V13.4.92
+Build cuda_13.4.r13.4/compiler.38855100_0
+gcc (GCC) 16.2.1 20260810
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+```
+
+This confirms NVIDIA driver 615.78.08, 8192 MiB reported GPU memory, CUDA
+13.4.92, and default GCC 16.2.1 at capture time. GCC 14 remains mandatory for
+this project's CUDA build.
 
 ## Measurement constraints
 

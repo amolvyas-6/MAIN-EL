@@ -12,11 +12,12 @@
   PLY/OBJ export, and NVML memory sampling. This changes no normal rendering
   or extraction path; the new bindings run only when explicitly called.
 - Added `docs/ENVIRONMENT.md` with the user-confirmed build configuration.
+- Recorded the human-provided live GPU, CUDA, and default-GCC version capture.
+- Added `docs/COMMANDS.md` as the durable, phase-by-phase command log for
+  future agents and contributors.
 
 ### Pending human-run acceptance evidence
 
-- Live environment-version output (`nvidia-smi`, `nvcc --version`, and
-  `gcc --version`).
 - A successful headless fox training/render and a saved snapshot.
 - A saved dense baseline mesh.
 - `results/baseline_*.csv` containing at least ten CUDA-event render timings,
@@ -26,6 +27,10 @@
 
 Not measured. No build, training, rendering, mesh extraction, benchmark, or
 profiling command has been run by the agent.
+
+The human reports having run the Phase 0 headless and benchmark commands, but
+their terminal outputs and raw CSV contents have not yet been pasted here.
+Their success state and metrics therefore remain unrecorded.
 
 ### Phase boundary
 
