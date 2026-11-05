@@ -16,23 +16,37 @@
 - Added `docs/COMMANDS.md` as the durable, phase-by-phase command log for
   future agents and contributors.
 
-### Pending human-run acceptance evidence
+### Human-run acceptance evidence
 
-- A successful headless fox training/render and a saved snapshot.
-- A saved dense baseline mesh.
-- `results/baseline_*.csv` containing at least ten CUDA-event render timings,
-  ten CUDA-event dense extraction timings, and NVML memory samples.
+- The fox headless command completed, saved `results/baseline_fox.ingp`, and
+  rendered frame `0001.jpg` to
+  `results/baseline_fox_render/`.
+- The baseline harness completed, saved `results/baseline_fox_256.ply`, and
+  wrote `results/baseline_fox_800x600_256.csv`.
+- The CSV contains ten raw CUDA-event render timings, ten raw CUDA-event
+  dense-extraction timings, and NVML device-memory samples for each series.
 
-### Measurements
+### Measured baseline results
 
-Not measured. No build, training, rendering, mesh extraction, benchmark, or
-profiling command has been run by the agent.
+Source for every value below:
+`results/baseline_fox_800x600_256.csv`. Timing is CUDA-event GPU time; memory
+is NVML device-wide memory sampled every 10 ms. Spread is the raw min--max
+range across the ten timed runs.
 
-The human reports having run the Phase 0 headless and benchmark commands, but
-their terminal outputs and raw CSV contents have not yet been pasted here.
-Their success state and metrics therefore remain unrecorded.
+| Metric | Configuration | Median | Spread | Notes |
+| --- | --- | ---: | --- | --- |
+| Render GPU time | fox, 800 x 600, baseline | 13.2495 ms/frame | 13.2055--13.3018 ms | warm-ups discarded before the CSV's 10 timed runs |
+| Peak GPU memory | fox, 800 x 600, baseline | 1219.75 MiB used | +36.00 MiB from series start | NVML device-wide sample peak |
+| Dense extraction GPU time | fox, 256 x 256 x 256 | 59.6270 ms | 57.3902--62.3350 ms | Includes density evaluation, dense MC, normals, and vertex colours |
+| Peak GPU memory | fox, 256 x 256 x 256, dense MC | 2079.75 MiB used | +860.00 MiB from series start | NVML device-wide sample peak |
+| Marching steps per ray | baseline | not measured | not measured | No baseline counter exists; Phase 2 will add one behind a flag |
+
+### Phase 0 acceptance status
+
+Passed. The required sample training/render, dense mesh export, render timing,
+dense marching-cubes timing, and peak-memory samples are present. No Phase 1
+work has started.
 
 ### Phase boundary
 
-Phase 1 has not started. Wait for Phase 0 commands to be run and the results
-to be pasted before updating measurements or proceeding.
+Phase 1 has not started. Wait for explicit approval before proceeding.
