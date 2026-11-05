@@ -42,6 +42,37 @@ namespace py = pybind11;
 
 namespace ngp {
 
+namespace {
+
+struct CudaBenchmarkEvents {
+	CudaBenchmarkEvents() {
+		CUDA_CHECK_THROW(cudaEventCreate(&start));
+		CUDA_CHECK_THROW(cudaEventCreate(&middle));
+		CUDA_CHECK_THROW(cudaEventCreate(&stop));
+	}
+
+	~CudaBenchmarkEvents() {
+		if (start) {
+			cudaEventDestroy(start);
+		}
+		if (middle) {
+			cudaEventDestroy(middle);
+		}
+		if (stop) {
+			cudaEventDestroy(stop);
+		}
+	}
+
+	CudaBenchmarkEvents(const CudaBenchmarkEvents&) = delete;
+	CudaBenchmarkEvents& operator=(const CudaBenchmarkEvents&) = delete;
+
+	cudaEvent_t start = nullptr;
+	cudaEvent_t middle = nullptr;
+	cudaEvent_t stop = nullptr;
+};
+
+} // namespace
+
 void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale) {
 	if (frame_idx < 0 || frame_idx >= dataset.n_images) {
 		throw std::runtime_error{"Invalid frame index"};
@@ -239,6 +270,107 @@ py::array_t<float> Testbed::render_to_cpu_rgba(
 	int width, int height, int spp, bool linear, float start_time, float end_time, float fps, float shutter_fraction
 ) {
 	return render_to_cpu(width, height, spp, linear, start_time, end_time, fps, shutter_fraction).first;
+}
+
+std::vector<float> Testbed::benchmark_render(uint32_t width, uint32_t height, uint32_t warmup_runs, uint32_t measured_runs) {
+	if (width == 0 || height == 0) {
+		throw std::runtime_error{"Benchmark render resolution must be non-zero."};
+	}
+	if (measured_runs == 0) {
+		throw std::runtime_error{"Benchmark render requires at least one measured run."};
+	}
+
+	m_windowless_render_surface.resize({(int)width, (int)height});
+	m_smoothed_camera = m_camera;
+
+	auto render_once = [&]() {
+		// Resetting fixes the sample index at zero for every timed frame.
+		m_windowless_render_surface.reset_accumulation();
+		render_frame(
+			m_stream.get(),
+			m_smoothed_camera,
+			m_smoothed_camera,
+			m_smoothed_camera,
+			m_screen_center,
+			m_relative_focal_length,
+			{0.0f, 0.0f, 0.0f, 1.0f},
+			{},
+			{},
+			{},
+			m_visualized_dimension,
+			m_windowless_render_surface,
+			true
+		);
+	};
+
+	for (uint32_t run = 0; run < warmup_runs; ++run) {
+		render_once();
+		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
+	}
+
+	CudaBenchmarkEvents events;
+	std::vector<float> elapsed_ms;
+	elapsed_ms.reserve(measured_runs);
+	for (uint32_t run = 0; run < measured_runs; ++run) {
+		CUDA_CHECK_THROW(cudaEventRecord(events.start, m_stream.get()));
+		render_once();
+		CUDA_CHECK_THROW(cudaEventRecord(events.stop, m_stream.get()));
+		CUDA_CHECK_THROW(cudaEventSynchronize(events.stop));
+
+		float milliseconds = 0.0f;
+		CUDA_CHECK_THROW(cudaEventElapsedTime(&milliseconds, events.start, events.stop));
+		elapsed_ms.emplace_back(milliseconds);
+	}
+
+	return elapsed_ms;
+}
+
+std::vector<float> Testbed::benchmark_dense_marching_cubes(
+	uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs
+) {
+	if (m_testbed_mode != ETestbedMode::Nerf) {
+		throw std::runtime_error{"Dense marching-cubes benchmark requires a NeRF testbed."};
+	}
+	if (resolution == 0) {
+		throw std::runtime_error{"Marching-cubes resolution must be non-zero."};
+	}
+	if (measured_runs == 0) {
+		throw std::runtime_error{"Dense marching-cubes benchmark requires at least one measured run."};
+	}
+
+	BoundingBox aabb = m_render_aabb;
+	mat3 render_aabb_to_local = m_render_aabb_to_local;
+	auto extract_once = [&]() {
+		marching_cubes(ivec3((int)resolution), aabb, render_aabb_to_local, thresh);
+	};
+
+	for (uint32_t run = 0; run < warmup_runs; ++run) {
+		extract_once();
+		CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	}
+
+	CudaBenchmarkEvents events;
+	std::vector<float> elapsed_ms;
+	elapsed_ms.reserve(measured_runs);
+	for (uint32_t run = 0; run < measured_runs; ++run) {
+		// The current dense extractor launches its marching-cubes kernels on the
+		// legacy default stream, while density and colour work use m_stream.
+		// Bridge the two streams before recording the stop event so the elapsed
+		// CUDA-event time covers the complete existing extraction path.
+		CUDA_CHECK_THROW(cudaDeviceSynchronize());
+		CUDA_CHECK_THROW(cudaEventRecord(events.start, nullptr));
+		extract_once();
+		CUDA_CHECK_THROW(cudaEventRecord(events.middle, m_stream.get()));
+		CUDA_CHECK_THROW(cudaStreamWaitEvent(nullptr, events.middle, 0));
+		CUDA_CHECK_THROW(cudaEventRecord(events.stop, nullptr));
+		CUDA_CHECK_THROW(cudaEventSynchronize(events.stop));
+
+		float milliseconds = 0.0f;
+		CUDA_CHECK_THROW(cudaEventElapsedTime(&milliseconds, events.start, events.stop));
+		elapsed_ms.emplace_back(milliseconds);
+	}
+
+	return elapsed_ms;
 }
 
 py::array_t<float> Testbed::view(bool linear, size_t view_idx) const {
@@ -529,6 +661,26 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("end_t") = -1.f,
 			py::arg("fps") = 30.f,
 			py::arg("shutter_fraction") = 1.0f
+		)
+		.def(
+			"benchmark_render",
+			&Testbed::benchmark_render,
+			py::call_guard<py::gil_scoped_release>(),
+			"Measure headless render time with CUDA events. Returns one GPU time in milliseconds per measured run.",
+			py::arg("width"),
+			py::arg("height"),
+			py::arg("warmup_runs") = 3,
+			py::arg("measured_runs") = 10
+		)
+		.def(
+			"benchmark_dense_marching_cubes",
+			&Testbed::benchmark_dense_marching_cubes,
+			py::call_guard<py::gil_scoped_release>(),
+			"Measure end-to-end dense marching-cubes extraction with CUDA events. Returns one GPU time in milliseconds per measured run.",
+			py::arg("resolution"),
+			py::arg("thresh") = 2.5f,
+			py::arg("warmup_runs") = 3,
+			py::arg("measured_runs") = 10
 		)
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")

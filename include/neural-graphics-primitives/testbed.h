@@ -521,6 +521,8 @@ public:
 		render_to_cpu(int width, int height, int spp, bool linear, float start_t, float end_t, float fps, float shutter_fraction);
 	pybind11::array_t<float>
 		render_to_cpu_rgba(int width, int height, int spp, bool linear, float start_t, float end_t, float fps, float shutter_fraction);
+	std::vector<float> benchmark_render(uint32_t width, uint32_t height, uint32_t warmup_runs, uint32_t measured_runs);
+	std::vector<float> benchmark_dense_marching_cubes(uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs);
 	pybind11::array_t<float> view(bool linear, size_t view) const;
 	void override_sdf_training_data(pybind11::array_t<float> points, pybind11::array_t<float> distances);
 #	ifdef NGP_GUI

@@ -1,0 +1,131 @@
+# NeRF2Mesh-GPU design notes
+
+## Status and scope
+
+This document records the Phase 0 source map of the checked-out
+Instant-NGP revision. It is not a performance report: no NeRF2Mesh-GPU
+measurements have been recorded yet. Later phase-specific kernel designs and
+their thread mappings will be added only after their implementation is
+approved.
+
+## Verified baseline source map
+
+### NeRF occupancy grid
+
+`include/neural-graphics-primitives/nerf_device.cuh` defines the occupancy
+layout used by this checkout:
+
+- `NERF_GRIDSIZE()` is 128 cells per axis and `NERF_GRID_N_CELLS()` is the
+  resulting per-cascade cell count.
+- `NERF_CASCADES()` is 8. A cascade is addressed by `grid_mip_offset(mip)`.
+- Grid cells are Morton ordered by `cascaded_grid_idx_at`. The float density
+  grid is accessed by `cascaded_grid_at`; the packed occupancy grid is
+  accessed by `density_grid_occupied_at`.
+
+The persistent data are `m_nerf.density_grid` (float values) and
+`m_nerf.density_grid_bitfield` (packed occupancy bits). The update path is
+`Testbed::update_density_grid_nerf` in `src/testbed_nerf.cu`. It samples and
+evaluates density with `generate_grid_samples_nerf_nonuniform`,
+`splat_grid_samples_nerf_max_nearest_neighbor`, and `ema_grid_samples_nerf`,
+then calls `Testbed::update_density_grid_mean_and_bitfield`. That latter
+function runs `grid_to_bitfield` for the finest level and `bitfield_max_pool`
+to build coarser occupancy levels.
+
+For Phase 1, the exact distance transform must be rebuilt after this existing
+update path changes the occupancy bitfield. The new transform must preserve
+the current Morton/cascade indexing or explicitly translate it at its
+boundary.
+
+### Ray marching and existing empty-space skipping
+
+The core baseline helper is
+`if_unoccupied_advance_to_next_occupied_voxel` in
+`include/neural-graphics-primitives/nerf_device.cuh`. It checks the bitfield,
+selects a cascade with `mip_from_pos` (or optionally `mip_from_dt`), climbs to
+an empty coarser cascade where possible, and calls `advance_to_next_voxel`.
+`advance_to_next_voxel` uses `distance_to_next_voxel` and converts its target
+back to the renderer's logarithmic stepping space.
+
+There are two rendering paths that call this helper:
+
+- The JIT-fused kernel `render_nerf` in
+  `include/neural-graphics-primitives/fused_kernels/render_nerf.cuh` uses one
+  CUDA thread per output pixel. `Testbed::render_nerf` in
+  `src/testbed_nerf.cu` constructs and launches it when JIT fusion is enabled
+  for shaded rendering.
+- The non-fused path begins in
+  `Testbed::NerfTracer::init_rays_from_camera`, then repeatedly uses
+  `generate_next_nerf_network_inputs`, neural-network inference, and
+  `composite_kernel_nerf` from `Testbed::NerfTracer::trace`. Its ray payloads
+  are compacted between iterations.
+
+Phase 2 must keep both baseline paths available. A distance-guided step must
+be conservative and must not replace the current occupancy test merely
+because a distance field is present. The fused and non-fused paths are both
+correctness-sensitive call sites.
+
+### Dense marching-cubes baseline
+
+`Testbed::marching_cubes` in `src/testbed_nerf.cu` is the host-level NeRF
+mesh-extraction entry point. It first calls `Testbed::get_density_on_grid`,
+which launches `generate_grid_samples_nerf_uniform`, evaluates the density
+network in batches, and writes a dense float grid through
+`grid_samples_half_to_float`. It then calls `marching_cubes_gpu`.
+
+`marching_cubes_gpu` in `src/marching_cubes.cu` is a dense two-pass extractor:
+
+1. `gen_vertices` and `gen_faces` count vertices and triangle indices using
+   atomics.
+2. The host copies those counters, allocates output buffers, then launches the
+   same kernels again to emit vertices and indices.
+
+Both kernels use a `4 x 4 x 4` CUDA thread block. `gen_vertices` allocates a
+three-plane integer edge-index workspace and interpolates crossings on the
+three positive cell edges. `gen_faces` derives a case mask from the eight
+density samples and reads its triangle table from a function-local static
+table. `compute_mesh_1ring` subsequently launches `accumulate_1ring` to form
+vertex normals and neighbourhood data.
+
+`save_mesh` in the same file writes OBJ or PLY. There is no GLB writer in the
+baseline. `Testbed::compute_and_save_marching_cubes_mesh` exposes the dense
+path to Python, and `scripts/run.py --save_mesh` invokes that binding.
+
+For Phase 3, the sparse path will remain behind a flag and be compared with
+this dense `Testbed::marching_cubes` path at the same resolution and threshold.
+The dense path evaluates every requested lattice point, so it is the correct
+baseline for time, memory, triangle-count, and mesh-agreement comparisons.
+
+### Headless and dataset interfaces
+
+`scripts/run.py` loads a training scene, optionally loads a snapshot, trains
+for `--n_steps`, and supports `--save_snapshot`, `--test_transforms`,
+`--screenshot_transforms`, and `--save_mesh`. The Python bindings in
+`src/python_api.cu` expose `Testbed::render_to_cpu_rgba` as `Testbed.render`
+and expose dense mesh extraction through
+`Testbed::compute_and_save_marching_cubes_mesh`.
+
+`scripts/colmap2nerf.py` accepts an image directory through `--images` and,
+with `--run_colmap`, runs COLMAP feature extraction, matching, mapping,
+bundle adjustment, and text export before writing `transforms.json`. It uses
+the `sequential` matcher by default; `exhaustive` is the appropriate explicit
+choice for an unordered still-photo capture.
+
+## Phase 0 baseline measurement design
+
+The Phase 0 benchmark harness will load an already-trained snapshot, select a
+fixed training view, discard warm-up iterations, and record at least ten
+timed iterations. GPU elapsed time will be measured with CUDA events on the
+streams used by the baseline work, not with Python wall-clock timing. Dense extraction time
+will include the current end-to-end `Testbed::marching_cubes` work: dense
+density evaluation, vertex/face generation, normals, and vertex colours.
+
+Peak memory will be sampled through NVML during the benchmark. The CSV will
+state that it is NVML device-memory sampling and will preserve every raw run
+using the project-wide columns:
+`experiment,scene,resolution,variant,run,metric,value,unit`.
+
+## Phase boundary
+
+No distance-transform, ray-skipping, sparse-marching-cubes, service, or
+viewer code is implemented in Phase 0. The next implementation work requires
+explicit approval after Phase 0 acceptance evidence is recorded.
