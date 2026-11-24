@@ -162,7 +162,7 @@ public:
 
 	class NerfTracer {
 	public:
-		NerfTracer() {}
+		NerfMarchingOptions marching;
 
 		void init_rays_from_camera(
 			uint32_t spp,
@@ -501,7 +501,8 @@ public:
 	vec2 calc_focal_length(const ivec2& resolution, const vec2& relative_focal_length, int fov_axis, float zoom) const;
 	vec2 render_screen_center(const vec2& screen_center) const;
 	void optimise_mesh_step(uint32_t N_STEPS);
-	void compute_mesh_vertex_colors();
+	void compute_mesh_vertex_colors(uint32_t max_batch = 0);
+	void initialize_mesh_optimizer();
 	GPUMemory<float> get_density_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // network version (nerf or sdf)
 	GPUMemory<float> get_sdf_gt_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // sdf gt version (sdf only)
 	GPUMemory<vec4> get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_centers, float depth, bool density_as_alpha = false);
@@ -521,8 +522,9 @@ public:
 		render_to_cpu(int width, int height, int spp, bool linear, float start_t, float end_t, float fps, float shutter_fraction);
 	pybind11::array_t<float>
 		render_to_cpu_rgba(int width, int height, int spp, bool linear, float start_t, float end_t, float fps, float shutter_fraction);
+	std::vector<uint32_t> empty_advances();
 	std::vector<float> benchmark_render(uint32_t width, uint32_t height, uint32_t warmup_runs, uint32_t measured_runs);
-	std::vector<float> benchmark_dense_marching_cubes(uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs);
+	std::vector<float> benchmark_dense_marching_cubes(uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs, int tile);
 	pybind11::array_t<float> view(bool linear, size_t view) const;
 	void override_sdf_training_data(pybind11::array_t<float> points, pybind11::array_t<float> distances);
 #	ifdef NGP_GUI
@@ -861,6 +863,7 @@ public:
 
 		GPUMemory<float> density_grid; // NERF_GRIDSIZE()^3 grid of EMA smoothed densities from the network
 		GPUMemory<uint8_t> density_grid_bitfield;
+		uint64_t occupancy_generation = 1;
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
 		GPUMemory<float> density_grid_mean;
 		uint32_t density_grid_ema_step = 0;
@@ -1101,6 +1104,9 @@ public:
 		struct Data {
 			GPUMemory<uint8_t> density_grid_bitfield;
 			uint8_t* density_grid_bitfield_ptr;
+			GPUMemory<float> occupancy_distances;
+			uint64_t distance_generation = 0;
+			GPUMemory<uint32_t> empty_advances;
 
 			GPUMemory<network_precision_t> params;
 			std::shared_ptr<Buffer2D<uint8_t>> hidden_area_mask;
@@ -1220,6 +1226,11 @@ public:
 	float m_foveated_rendering_max_scaling = 2.0f;
 	bool m_foveated_rendering_visualize = false;
 
+	int m_sparse_mesh_tile = 0;
+	bool m_use_distance_skip = false;
+	bool m_stable_ray_steps = false;
+	bool m_disable_ray_skipping = false;
+	bool m_count_empty_advances = false;
 	bool m_jit_fusion = tcnn::supports_jit_fusion();
 
 	fs::path m_data_path;

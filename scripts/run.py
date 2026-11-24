@@ -59,7 +59,10 @@ def parse_args():
 	parser.add_argument("--video_spp", type=int, default=8, help="Number of samples per pixel. A larger number means less noise, but slower rendering.")
 	parser.add_argument("--video_output", type=str, default="video.mp4", help="Filename of the output video (video.mp4) or video frames (video_%%04d.png).")
 
-	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF or SDF model. Supports OBJ and PLY format.")
+	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF or SDF model. Supports OBJ, PLY, and GLB.")
+	parser.add_argument("--use-distance-skip", action="store_true", help="Use the exact occupancy distance field in shaded NeRF rendering.")
+	parser.add_argument("--sparse-mesh", action="store_true", help="Use occupancy-guided sparse NeRF mesh extraction.")
+	parser.add_argument("--mesh-block-size", type=int, choices=(8, 16), default=8)
 	parser.add_argument("--marching_cubes_res", default=256, type=int, help="Sets the resolution for the marching cubes grid.")
 	parser.add_argument("--marching_cubes_density_thresh", default=2.5, type=float, help="Sets the density threshold for marching cubes.")
 
@@ -137,6 +140,11 @@ if __name__ == "__main__":
 
 	if testbed.mode == ngp.TestbedMode.Sdf:
 		testbed.tonemap_curve = ngp.TonemapCurve.ACES
+
+	if args.use_distance_skip:
+		testbed.use_distance_skip = True
+	if args.sparse_mesh:
+		testbed.sparse_mesh_tile = args.mesh_block_size
 
 	testbed.nerf.sharpen = float(args.sharpen)
 	testbed.exposure = args.exposure
@@ -320,7 +328,12 @@ if __name__ == "__main__":
 		res = args.marching_cubes_res or 256
 		thresh = args.marching_cubes_density_thresh or 2.5
 		print(f"Generating mesh via marching cubes and saving to {args.save_mesh}. Resolution=[{res},{res},{res}], Density Threshold={thresh}")
-		testbed.compute_and_save_marching_cubes_mesh(args.save_mesh, [res, res, res], thresh=thresh)
+		if args.save_mesh.lower().endswith(".glb"):
+			from mesh_glb import write_glb
+			mesh = testbed.compute_marching_cubes_mesh([res, res, res], thresh=thresh)
+			write_glb(args.save_mesh, mesh)
+		else:
+			testbed.compute_and_save_marching_cubes_mesh(args.save_mesh, [res, res, res], thresh=thresh)
 
 	if ref_transforms:
 		# TODO: load lens & screen center from ref_transforms

@@ -459,6 +459,49 @@ inline NGP_HOST_DEVICE uint32_t mip_from_dt(float dt, const vec3& pos, uint32_t 
 	return (uint32_t)clamp((int)mip, exponent, (int)max_cascade);
 }
 
+struct NerfMarchingOptions {
+	const float* distances = nullptr;
+	uint32_t* empty_advances = nullptr;
+	bool stable_steps = false;
+	bool disable_empty_skips = false;
+};
+
+NGP_HOST_DEVICE inline float distance_skip_bound(
+	const vec3& pos, const vec3& dir, const vec3& idir, uint32_t mip, uint32_t lookup_mip, const float* distances,
+	float minimum
+) {
+	float voxel = scalbnf(1.0f / NERF_GRIDSIZE(), int(mip));
+	vec3 relative = pos - 0.5f;
+	vec3 grid_pos = relative / voxel + NERF_GRIDSIZE() * 0.5f;
+	if (min(grid_pos) < 0.0f || max(grid_pos) >= NERF_GRIDSIZE()) {
+		return 0.0f;
+	}
+	ivec3 cell = grid_pos;
+	uint32_t index = cell.x + NERF_GRIDSIZE() * (cell.y + NERF_GRIDSIZE() * cell.z);
+	float center_distance = distances[grid_mip_offset(mip) + index];
+	// Both the query and the nearest occupied position can lie up to one
+	// half diagonal from their voxel centers.
+	float bound = (center_distance - SQRT3()) * voxel;
+	if (bound <= minimum || min(abs(dir)) == 0.0f) {
+		return 0.0f;
+	}
+
+	// Different cascades can contain additional occupied cells. Clip to the
+	// enclosing lookup cube and to the entry point of the next smaller cube.
+	float radius = scalbnf(0.5f, int(lookup_mip));
+	vec3 facing = {copysignf(1.0f, dir.x), copysignf(1.0f, dir.y), copysignf(1.0f, dir.z)};
+	bound = fminf(bound, min((facing * radius - relative) * idir));
+	if (lookup_mip > 0) {
+		vec3 half_radius = facing * (radius * 0.5f);
+		float entry = max((-half_radius - relative) * idir);
+		float exit = min((half_radius - relative) * idir);
+		if (entry >= 0.0f && exit >= entry) {
+			bound = fminf(bound, entry);
+		}
+	}
+	return bound;
+}
+
 template <bool MIP_FROM_DT=false>
 NGP_HOST_DEVICE float if_unoccupied_advance_to_next_occupied_voxel(
 	float t,
@@ -469,8 +512,12 @@ NGP_HOST_DEVICE float if_unoccupied_advance_to_next_occupied_voxel(
 	uint32_t min_mip,
 	uint32_t max_mip,
 	BoundingBox aabb,
-	mat3 aabb_to_local = mat3::identity()
+	mat3 aabb_to_local = mat3::identity(),
+	NerfMarchingOptions marching = {},
+	uint32_t ray_index = 0
 ) {
+	float anchor = 0.0f;
+	uint32_t offset = 0;
 	while (true) {
 		vec3 pos = ray(t);
 		if (t >= MAX_DEPTH() || !aabb.contains(aabb_to_local * pos)) {
@@ -483,14 +530,60 @@ NGP_HOST_DEVICE float if_unoccupied_advance_to_next_occupied_voxel(
 			return t;
 		}
 
+		if (!MIP_FROM_DT && marching.empty_advances) {
+			++marching.empty_advances[ray_index];
+		}
+
+		if (!MIP_FROM_DT && marching.disable_empty_skips) {
+			// Keep the same sample lattice as the skipping paths and check every position.
+			if (offset == 0) {
+				anchor = to_stepping_space(t, cone_angle);
+			}
+			t = from_stepping_space(anchor + float(++offset), cone_angle);
+			continue;
+		}
+
 		// Find largest empty voxel surrounding us, such that we can advance as far as possible in the next step.
 		// Other places that do voxel stepping don't need this, because they don't rely on thread coherence as
 		// much as this one here.
+		uint32_t lookup_mip = mip;
 		while (mip < max_mip && !density_grid_occupied_at(pos, density_grid, mip+1)) {
 			++mip;
 		}
 
-		t = advance_to_next_voxel(t, cone_angle, pos, ray.d, idir, mip);
+		if (MIP_FROM_DT || !marching.stable_steps) {
+			t = advance_to_next_voxel(t, cone_angle, pos, ray.d, idir, mip);
+			continue;
+		}
+
+		// Keep the phase of the sample lattice fixed while traversing empty
+		// cells. Repeatedly converting t to log space accumulates roundoff
+		// and makes the occupied sample depend on how many empty hops ran.
+		if (offset == 0) {
+			anchor = to_stepping_space(t, cone_angle);
+		}
+		float current = (anchor + float(offset));
+		float voxel_res = scalbnf(NERF_GRIDSIZE(), -int(mip));
+		float next_boundary = distance_to_next_voxel(pos, ray.d, idir, voxel_res);
+		float target = t + next_boundary;
+		if (marching.distances) {
+			float safe = distance_skip_bound(pos, ray.d, idir, mip, lookup_mip, marching.distances, next_boundary);
+			float end = fminf(t + safe, MAX_DEPTH()) - 1e-5f * fmaxf(1.0f, fabsf(t));
+			if (end > target) {
+				float steps = floorf(to_stepping_space(end, cone_angle) - current);
+				if (steps >= 1.0f) {
+					uint32_t jump = offset + uint32_t(steps);
+					float next = from_stepping_space(anchor + float(jump), cone_angle);
+					if (next >= target && next < end) {
+						offset = jump;
+						t = next;
+						continue;
+					}
+				}
+			}
+		}
+		offset += uint32_t(ceilf(fmaxf(to_stepping_space(target, cone_angle) - current, 0.5f)));
+		t = from_stepping_space(anchor + float(offset), cone_angle);
 	}
 }
 

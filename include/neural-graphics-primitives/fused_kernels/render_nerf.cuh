@@ -54,7 +54,8 @@ __launch_bounds__(128, 4) __global__ void render_nerf(
 	float min_transmittance,
 	bool train_in_linear_colors,
 	bool surface_rendering,
-	float surface_rendering_threshold
+	float surface_rendering_threshold,
+	NerfMarchingOptions marching
 ) {
 	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
 	uint32_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -109,7 +110,7 @@ __launch_bounds__(128, 4) __global__ void render_nerf(
 
 		if (alive) {
 			t = if_unoccupied_advance_to_next_occupied_voxel(
-				t, cone_angle, ray, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local
+				t, cone_angle, ray, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local, marching, idx
 			);
 			alive &= t < MAX_DEPTH();
 			if (alive) {

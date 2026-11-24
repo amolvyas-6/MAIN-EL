@@ -4182,6 +4182,7 @@ void Testbed::reset_network(bool clear_density_grid) {
 	if (clear_density_grid) {
 		m_nerf.density_grid.memset(0);
 		m_nerf.density_grid_bitfield.memset(0);
+		++m_nerf.occupancy_generation;
 
 		set_all_devices_dirty();
 	}

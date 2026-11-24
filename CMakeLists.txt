@@ -70,7 +70,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # CUDA compiler setup
 ###############################################################################
 
-set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CUDA_LINK_LIBRARIES_KEYWORD PUBLIC)
@@ -268,6 +268,8 @@ list(APPEND NGP_SOURCES
 	src/camera_path.cu
 	src/common_host.cu
 	src/marching_cubes.cu
+	src/distance_transform.cu
+	src/sparse_marching_cubes.cu
 	src/nerf_loader.cu
 	src/render_buffer.cu
 	src/testbed.cu

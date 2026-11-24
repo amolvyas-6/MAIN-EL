@@ -22,6 +22,8 @@
 #include <neural-graphics-primitives/nerf_network.h>
 #include <neural-graphics-primitives/render_buffer.h>
 #include <neural-graphics-primitives/testbed.h>
+#include <neural-graphics-primitives/distance_transform.h>
+#include <neural-graphics-primitives/sparse_marching_cubes.h>
 #include <neural-graphics-primitives/trainable_buffer.cuh>
 #include <neural-graphics-primitives/triangle_octree.cuh>
 
@@ -405,7 +407,8 @@ __device__ void advance_pos_nerf(
 	const uint8_t* __restrict__ density_grid,
 	uint32_t min_mip,
 	uint32_t max_mip,
-	float cone_angle_constant
+	float cone_angle_constant,
+	NerfMarchingOptions marching
 ) {
 	if (!payload.alive) {
 		return;
@@ -419,7 +422,7 @@ __device__ void advance_pos_nerf(
 
 	float t = advance_n_steps(payload.t, cone_angle, ld_random_val(sample_index, payload.idx * 786433));
 	t = if_unoccupied_advance_to_next_occupied_voxel(
-		t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local
+		t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local, marching, payload.idx
 	);
 	if (t >= MAX_DEPTH()) {
 		payload.alive = false;
@@ -439,7 +442,8 @@ __global__ void advance_pos_nerf_kernel(
 	const uint8_t* __restrict__ density_grid,
 	uint32_t min_mip,
 	uint32_t max_mip,
-	float cone_angle_constant
+	float cone_angle_constant,
+	NerfMarchingOptions marching
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) {
@@ -447,7 +451,7 @@ __global__ void advance_pos_nerf_kernel(
 	}
 
 	advance_pos_nerf(
-		payloads[i], render_aabb, render_aabb_to_local, camera_fwd, focal_length, sample_index, density_grid, min_mip, max_mip, cone_angle_constant
+		payloads[i], render_aabb, render_aabb_to_local, camera_fwd, focal_length, sample_index, density_grid, min_mip, max_mip, cone_angle_constant, marching
 	);
 }
 
@@ -534,7 +538,8 @@ __global__ void generate_next_nerf_network_inputs(
 	uint32_t min_mip,
 	uint32_t max_mip,
 	float cone_angle_constant,
-	const float* extra_dims
+	const float* extra_dims,
+	NerfMarchingOptions marching
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) {
@@ -557,7 +562,7 @@ __global__ void generate_next_nerf_network_inputs(
 
 	for (uint32_t j = 0; j < n_steps; ++j) {
 		t = if_unoccupied_advance_to_next_occupied_voxel(
-			t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local
+			t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local, marching, payload.idx
 		);
 		if (t >= MAX_DEPTH()) {
 			payload.n_steps = j;
@@ -1670,7 +1675,8 @@ void Testbed::NerfTracer::init_rays_from_camera(
 		grid,
 		(show_accel >= 0) ? show_accel : 0,
 		max_mip,
-		cone_angle_constant
+		cone_angle_constant,
+		marching
 	);
 }
 
@@ -1764,7 +1770,8 @@ uint32_t Testbed::NerfTracer::trace(
 			(show_accel >= 0) ? show_accel : 0,
 			max_mip,
 			cone_angle_constant,
-			extra_dims_gpu
+			extra_dims_gpu,
+			marching
 		);
 		uint32_t n_elements = next_multiple(n_alive * n_steps_between_compaction, BATCH_SIZE_GRANULARITY);
 		GPUMatrix<float> positions_matrix((float*)m_network_input, (sizeof(NerfCoordinate) + extra_stride) / sizeof(float), n_elements);
@@ -1918,6 +1925,21 @@ void Testbed::render_nerf(
 	const float* extra_dims_gpu = m_nerf.get_rendering_extra_dims(stream);
 
 	NerfTracer tracer;
+	auto& render_data = device.data();
+	tracer.marching.disable_empty_skips = m_disable_ray_skipping;
+	if (m_use_distance_skip && !m_disable_ray_skipping && density_grid_bitfield && m_nerf.show_accel < 0 && render_mode == ERenderMode::Shade) {
+		if (render_data.distance_generation != m_nerf.occupancy_generation) {
+			distance_transform(stream, density_grid_bitfield, NERF_GRIDSIZE(), m_nerf.max_cascade + 1, true, false, render_data.occupancy_distances);
+			render_data.distance_generation = m_nerf.occupancy_generation;
+		}
+		tracer.marching.distances = render_data.occupancy_distances.data();
+	}
+	tracer.marching.stable_steps = m_stable_ray_steps || tracer.marching.distances != nullptr;
+	if (m_count_empty_advances) {
+		render_data.empty_advances.resize(product(render_buffer.resolution));
+		CUDA_CHECK_THROW(cudaMemsetAsync(render_data.empty_advances.data(), 0, render_data.empty_advances.bytes(), stream));
+		tracer.marching.empty_advances = render_data.empty_advances.data();
+	}
 
 	// Our motion vector code can't undo grid distortions -- so don't render grid distortion if DLSS is enabled.
 	// (Unless we're in distortion visualization mode, in which case the distortion grid is fine to visualize.)
@@ -1995,7 +2017,8 @@ void Testbed::render_nerf(
 				m_nerf.render_min_transmittance,
 				m_nerf.training.linear_colors,
 				m_nerf.surface_rendering,
-				m_nerf.surface_rendering_threshold
+				m_nerf.surface_rendering_threshold,
+				tracer.marching
 			);
 
 			return;
@@ -2629,6 +2652,7 @@ void Testbed::update_density_grid_mean_and_bitfield(cudaStream_t stream) {
 		);
 	}
 
+	++m_nerf.occupancy_generation;
 	set_all_devices_dirty();
 }
 
@@ -3403,6 +3427,10 @@ void Testbed::optimise_mesh_step(uint32_t n_steps) {
 		return;
 	}
 
+	if (!m_mesh.verts_optimizer) {
+		initialize_mesh_optimizer();
+	}
+
 	const uint32_t padded_output_width = m_nerf_network->padded_density_output_width();
 	const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
 	const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float);
@@ -3455,7 +3483,7 @@ void Testbed::optimise_mesh_step(uint32_t n_steps) {
 	}
 }
 
-void Testbed::compute_mesh_vertex_colors() {
+void Testbed::compute_mesh_vertex_colors(uint32_t max_batch) {
 	uint32_t n_verts = (uint32_t)m_mesh.verts.size();
 	if (!n_verts) {
 		return;
@@ -3469,33 +3497,37 @@ void Testbed::compute_mesh_vertex_colors() {
 
 		const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
 		const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float);
-		GPUMemory<float> coords(n_verts * floats_per_coord);
-		GPUMemory<float> mlp_out(n_verts * 4);
+		uint32_t capacity = max_batch ? std::min(max_batch, n_verts) : n_verts;
+		GPUMemory<float> coords(capacity * floats_per_coord);
+		GPUMemory<float> mlp_out(capacity * 4);
 
-		GPUMatrix<float> positions_matrix((float*)coords.data(), floats_per_coord, n_verts);
-		GPUMatrix<float> color_matrix(mlp_out.data(), 4, n_verts);
-		linear_kernel(
-			generate_nerf_network_inputs_from_positions,
-			0,
-			m_stream.get(),
-			n_verts,
-			m_aabb,
-			m_mesh.verts.data(),
-			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride),
-			extra_dims_gpu
-		);
-		m_network->inference(m_stream.get(), positions_matrix, color_matrix);
-		linear_kernel(
-			extract_srgb_with_activation,
-			0,
-			m_stream.get(),
-			n_verts * 3,
-			3,
-			mlp_out.data(),
-			(float*)m_mesh.vert_colors.data(),
-			m_nerf.rgb_activation,
-			m_nerf.training.linear_colors
-		);
+		for (uint32_t offset = 0; offset < n_verts; offset += capacity) {
+			uint32_t count = std::min(capacity, n_verts - offset);
+			GPUMatrix<float> positions_matrix((float*)coords.data(), floats_per_coord, count);
+			GPUMatrix<float> color_matrix(mlp_out.data(), 4, count);
+			linear_kernel(
+				generate_nerf_network_inputs_from_positions,
+				0,
+				m_stream.get(),
+				count,
+				m_aabb,
+				m_mesh.verts.data() + offset,
+				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride),
+				extra_dims_gpu
+			);
+			m_network->inference(m_stream.get(), positions_matrix, color_matrix);
+			linear_kernel(
+				extract_srgb_with_activation,
+				0,
+				m_stream.get(),
+				count * 3,
+				3,
+				mlp_out.data(),
+				(float*)(m_mesh.vert_colors.data() + offset),
+				m_nerf.rgb_activation,
+				m_nerf.training.linear_colors
+			);
+		}
 	}
 }
 
@@ -3620,9 +3652,45 @@ int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& re
 		thresh = m_mesh.thresh;
 	}
 
-	GPUMemory<float> density = get_density_on_grid(res3d, aabb, render_aabb_to_local);
-	marching_cubes_gpu(m_stream.get(), aabb, render_aabb_to_local, res3d, thresh, density, m_mesh.verts, m_mesh.indices);
+	bool sparse = m_sparse_mesh_tile && m_testbed_mode == ETestbedMode::Nerf;
+	if (sparse) {
+		m_mesh.clear();
+		auto stream = m_stream.get();
+		auto width = m_nerf_network->padded_density_output_width();
+		GPUMemoryArena::Allocation allocation;
+		network_precision_t* inference = nullptr;
+		auto evaluate = [&](const NerfPosition* positions, float* output, uint32_t count) {
+			if (!inference) {
+				auto scratch = allocate_workspace_and_distribute<network_precision_t>(stream, &allocation, count * width);
+				inference = std::get<0>(scratch);
+			}
+			GPUMatrix<float> inputs((float*)positions, sizeof(NerfPosition) / sizeof(float), count);
+			GPUMatrix<network_precision_t, RM> densities(inference, width, count);
+			m_nerf_network->density(stream, inputs, densities);
+			linear_kernel(grid_samples_half_to_float, 0, stream, count, m_aabb, output, inference,
+				m_nerf.density_activation, positions, m_nerf.density_grid.data(), m_nerf.max_cascade);
+		};
+		sparse_marching_cubes_gpu(stream, aabb, render_aabb_to_local, m_aabb, res3d, thresh, m_sparse_mesh_tile,
+			m_nerf.density_grid.data(), m_nerf.max_cascade, evaluate, m_mesh.verts, m_mesh.indices);
+		if (m_mesh.indices.size() == 0) {
+			m_mesh.vert_normals.resize(0);
+			m_mesh.vert_colors.resize(0);
+			return 0;
+		}
+	} else {
+		GPUMemory<float> density = get_density_on_grid(res3d, aabb, render_aabb_to_local);
+		marching_cubes_gpu(m_stream.get(), aabb, render_aabb_to_local, res3d, thresh, density, m_mesh.verts, m_mesh.indices);
+	}
 
+	if (!sparse || m_mesh.optimize_mesh) {
+		initialize_mesh_optimizer();
+	}
+	compute_mesh_1ring(m_mesh.verts, m_mesh.indices, m_mesh.verts_smoothed, m_mesh.vert_normals);
+	compute_mesh_vertex_colors(sparse ? 1u << 20 : 0);
+	return (int)(m_mesh.indices.size() / 3);
+}
+
+void Testbed::initialize_mesh_optimizer() {
 	uint32_t n_verts = (uint32_t)m_mesh.verts.size();
 	m_mesh.verts_gradient.resize(n_verts);
 
@@ -3644,11 +3712,6 @@ int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& re
 	);
 
 	m_mesh.verts_optimizer->allocate(m_mesh.trainable_verts);
-
-	compute_mesh_1ring(m_mesh.verts, m_mesh.indices, m_mesh.verts_smoothed, m_mesh.vert_normals);
-	compute_mesh_vertex_colors();
-
-	return (int)(m_mesh.indices.size() / 3);
 }
 
 uint8_t* Testbed::Nerf::get_density_grid_bitfield_mip(uint32_t mip) { return density_grid_bitfield.data() + grid_mip_offset(mip) / 8; }

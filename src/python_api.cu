@@ -14,6 +14,7 @@
 
 #include <neural-graphics-primitives/common_device.cuh>
 #include <neural-graphics-primitives/testbed.h>
+#include <neural-graphics-primitives/distance_transform.h>
 #include <neural-graphics-primitives/thread_pool.h>
 
 #include <json/json.hpp>
@@ -70,6 +71,34 @@ struct CudaBenchmarkEvents {
 	cudaEvent_t middle = nullptr;
 	cudaEvent_t stop = nullptr;
 };
+
+py::tuple measure_distance_transform(
+	py::array_t<uint8_t, py::array::c_style | py::array::forcecast> occupancy, bool jfa, uint32_t warmup, uint32_t runs
+) {
+	int side = occupancy.ndim() == 3 ? occupancy.shape(0) : 0;
+	if (side < 1 || side > 128 || occupancy.shape(1) != side || occupancy.shape(2) != side || runs == 0) {
+		throw std::invalid_argument{"Occupancy must be a cubic array up to 128 on each axis, with at least one timed run."};
+	}
+	GPUMemory<uint8_t> mask(occupancy.size());
+	CUDA_CHECK_THROW(cudaMemcpy(mask.data(), occupancy.data(), mask.bytes(), cudaMemcpyHostToDevice));
+	GPUMemory<float> distances;
+	CudaBenchmarkEvents events;
+	std::vector<float> elapsed;
+	for (uint32_t i = 0; i < warmup + runs; ++i) {
+		CUDA_CHECK_THROW(cudaEventRecord(events.start));
+		distance_transform(nullptr, mask.data(), side, 1, false, jfa, distances);
+		CUDA_CHECK_THROW(cudaEventRecord(events.stop));
+		CUDA_CHECK_THROW(cudaEventSynchronize(events.stop));
+		if (i >= warmup) {
+			float ms;
+			CUDA_CHECK_THROW(cudaEventElapsedTime(&ms, events.start, events.stop));
+			elapsed.push_back(ms);
+		}
+	}
+	py::array_t<float> result({side, side, side});
+	CUDA_CHECK_THROW(cudaMemcpy(result.mutable_data(), distances.data(), distances.bytes(), cudaMemcpyDeviceToHost));
+	return py::make_tuple(result, elapsed);
+}
 
 } // namespace
 
@@ -272,6 +301,16 @@ py::array_t<float> Testbed::render_to_cpu_rgba(
 	return render_to_cpu(width, height, spp, linear, start_time, end_time, fps, shutter_fraction).first;
 }
 
+std::vector<uint32_t> Testbed::empty_advances() {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	auto& buffer = primary_device().data().empty_advances;
+	std::vector<uint32_t> values(buffer.size());
+	if (!values.empty()) {
+		buffer.copy_to_host(values);
+	}
+	return values;
+}
+
 std::vector<float> Testbed::benchmark_render(uint32_t width, uint32_t height, uint32_t warmup_runs, uint32_t measured_runs) {
 	if (width == 0 || height == 0) {
 		throw std::runtime_error{"Benchmark render resolution must be non-zero."};
@@ -326,10 +365,10 @@ std::vector<float> Testbed::benchmark_render(uint32_t width, uint32_t height, ui
 }
 
 std::vector<float> Testbed::benchmark_dense_marching_cubes(
-	uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs
+	uint32_t resolution, float thresh, uint32_t warmup_runs, uint32_t measured_runs, int tile
 ) {
 	if (m_testbed_mode != ETestbedMode::Nerf) {
-		throw std::runtime_error{"Dense marching-cubes benchmark requires a NeRF testbed."};
+		throw std::runtime_error{"Marching-cubes benchmark requires a NeRF testbed."};
 	}
 	if (resolution == 0) {
 		throw std::runtime_error{"Marching-cubes resolution must be non-zero."};
@@ -337,6 +376,10 @@ std::vector<float> Testbed::benchmark_dense_marching_cubes(
 	if (measured_runs == 0) {
 		throw std::runtime_error{"Dense marching-cubes benchmark requires at least one measured run."};
 	}
+
+	int previous_tile = m_sparse_mesh_tile;
+	m_sparse_mesh_tile = tile;
+	ScopeGuard restore{[&]() { m_sparse_mesh_tile = previous_tile; }};
 
 	BoundingBox aabb = m_render_aabb;
 	mat3 render_aabb_to_local = m_render_aabb_to_local;
@@ -436,6 +479,9 @@ py::array_t<float> Testbed::screenshot(bool linear, bool front_buffer) const {
 #endif
 
 PYBIND11_MODULE(pyngp, m) {
+	m.def("measure_distance_transform", &measure_distance_transform, py::arg("occupancy"),
+		py::arg("jump_flood") = false, py::arg("warmup") = 3, py::arg("runs") = 10);
+
 	m.doc() = "Instant neural graphics primitives";
 
 	m.def("free_temporary_memory", &free_all_gpu_memory_arenas);
@@ -676,12 +722,19 @@ PYBIND11_MODULE(pyngp, m) {
 			"benchmark_dense_marching_cubes",
 			&Testbed::benchmark_dense_marching_cubes,
 			py::call_guard<py::gil_scoped_release>(),
-			"Measure end-to-end dense marching-cubes extraction with CUDA events. Returns one GPU time in milliseconds per measured run.",
+			"Measure mesh extraction with CUDA events. Tile 0 selects dense extraction.",
 			py::arg("resolution"),
 			py::arg("thresh") = 2.5f,
 			py::arg("warmup_runs") = 3,
-			py::arg("measured_runs") = 10
+			py::arg("measured_runs") = 10,
+			py::arg("tile") = 0
 		)
+		.def_readwrite("use_distance_skip", &Testbed::m_use_distance_skip)
+		.def_readwrite("stable_ray_steps", &Testbed::m_stable_ray_steps)
+		.def_readwrite("disable_ray_skipping", &Testbed::m_disable_ray_skipping)
+		.def_readwrite("count_empty_advances", &Testbed::m_count_empty_advances)
+		.def_readwrite("sparse_mesh_tile", &Testbed::m_sparse_mesh_tile)
+		.def("empty_advances", &Testbed::empty_advances)
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
 		.def("reset_camera", &Testbed::reset_camera, "Reset camera to default state.")
