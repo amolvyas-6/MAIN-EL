@@ -15,6 +15,16 @@ In each case, we train and render a MLP with multiresolution hash input encoding
 For business inquiries, please submit the [NVIDIA research licensing form](https://www.nvidia.com/en-us/research/inquiries/).
 
 
+## NeRF2Mesh Studio
+
+This course-project fork adds an exact CUDA Euclidean distance field for ray
+skipping, a jump-flooding comparison, occupancy-guided sparse marching cubes,
+and a local capture-to-GLB service with a Next.js and Three.js viewer.
+
+- [Build, run, and demonstrate the project](docs/DEMO.md)
+- [CUDA implementation and benchmark design](docs/DESIGN.md)
+- [Measured comparisons](docs/RESULTS.md)
+
 ## Installation
 
 If you have Windows, download one of the following releases corresponding to your graphics card and extract it. Then, start `instant-ngp.exe`.

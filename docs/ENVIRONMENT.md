@@ -69,3 +69,11 @@ The 8 GB VRAM capacity makes a dense 1024-cubed float field approximately
 4.3 GB before temporary and output allocations. Dense high-resolution mesh
 tests may therefore run out of memory; that outcome must be recorded as a
 result rather than hidden.
+
+
+## Studio verification environment
+
+The later Studio build used CUDA 13.5.37, GCC 14.3.1, Python 3.12.16,
+and Node.js 26.13.1 on the same RTX 3070 Ti Laptop GPU with the
+620.73.04 driver. The build enables headless Python bindings and targets
+Ampere 8.6. See [Studio setup](DEMO.md) for the current configure command.

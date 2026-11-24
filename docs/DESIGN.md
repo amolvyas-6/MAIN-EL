@@ -1,13 +1,5 @@
 # NeRF2Mesh-GPU design notes
 
-## Status and scope
-
-This document records the Phase 0 source map of the checked-out
-Instant-NGP revision. It is not a performance report: no NeRF2Mesh-GPU
-measurements have been recorded yet. Later phase-specific kernel designs and
-their thread mappings will be added only after their implementation is
-approved.
-
 ## Verified baseline source map
 
 ### NeRF occupancy grid
@@ -112,20 +104,74 @@ choice for an unordered still-photo capture.
 
 ## Phase 0 baseline measurement design
 
-The Phase 0 benchmark harness will load an already-trained snapshot, select a
-fixed training view, discard warm-up iterations, and record at least ten
-timed iterations. GPU elapsed time will be measured with CUDA events on the
-streams used by the baseline work, not with Python wall-clock timing. Dense extraction time
-will include the current end-to-end `Testbed::marching_cubes` work: dense
+The Phase 0 benchmark harness loads an already-trained snapshot, selects a
+fixed training view, discards warm-up iterations, and records at least ten
+timed iterations. CUDA events measure elapsed time on the streams used by
+the baseline work. Dense extraction time includes the end-to-end `Testbed::marching_cubes` work: dense
 density evaluation, vertex/face generation, normals, and vertex colours.
 
-Peak memory will be sampled through NVML during the benchmark. The CSV will
-state that it is NVML device-memory sampling and will preserve every raw run
+The harness samples peak memory through NVML and preserves every raw run
 using the project-wide columns:
 `experiment,scene,resolution,variant,run,metric,value,unit`.
 
-## Phase boundary
+## Accelerated paths
 
-No distance-transform, ray-skipping, sparse-marching-cubes, service, or
-viewer code is implemented in Phase 0. The next implementation work requires
-explicit approval after Phase 0 acceptance evidence is recorded.
+### Distance field and empty-space traversal
+
+`distance_transform` converts each Morton-ordered occupancy cascade to a
+row-major grid. The exact path runs three separable passes over squared
+distances. Each CUDA thread builds one 1D lower envelope using shared-memory
+arrays for its candidate sites and integer crossing points. The final voxel
+kernel takes a correctly rounded square root. An empty cascade produces
+infinite distances.
+
+The jump-flood path stores a nearest-seed voxel index and checks the 3D
+neighborhood of each voxel at successive halved strides. Each pass reads the
+previous pass and writes to a second buffer. Its runtime and error are
+measured against the CPU reference. Only the exact field drives rendering
+because an approximate seed can overestimate the clearance.
+
+Each device caches the exact field for the current occupancy generation and
+refreshes it on the first accelerated render after an update. The marcher
+converts the voxel-unit field using the cascade scale. Its lower bound
+subtracts two half diagonals, one for the query point and one for the nearest
+occupied point. It also clips the jump at lookup-cascade
+boundaries. Jumps advance by whole sample indices on a fixed phase per empty
+segment. The fused per-pixel kernel and unfused per-ray kernels use the same
+skip helper. The optional per-ray counter counts empty advances. Timing
+runs disable instrumentation and warm up the cached field.
+
+### Sparse extraction and export
+
+The sparse path uses the same density mask, iso-level convention, lattice
+coordinates, and triangle table as the dense extractor. One thread checks
+each tile's coarse occupancy footprint including a one-sample halo. The
+footprint conservatively covers every potentially contributing cascade.
+A scan compacts candidate tile IDs. The density network evaluates only those
+tiles in batches, including halo samples.
+
+One CUDA thread block per candidate tile reduces the above- and below-iso
+conditions to keep only tiles that contain both. A scan compacts this list.
+One thread per cell classifies its corners using the constant-memory case
+table. Exclusive scans over triangle counts and tile-edge crossings give
+threads disjoint index and vertex output regions. Adjacent cells share
+edge vertices inside a tile. The sparse path evaluates vertex colours in
+batches and initializes editable-mesh optimizer buffers on demand. GLB export welds identical vertices across
+tiles and rebuilds smooth, area-weighted normals.
+
+### Photo service
+
+FastAPI persists job metadata and normalized photos on disk. A local worker
+runs PyCOLMAP camera recovery, headless Instant-NGP training, and an isolated
+export process. The scheduling policy orders waiting jobs. The GPU worker
+runs one job at a time, so starting another job does not contend for its
+VRAM. The shortest-job-first estimate accounts for image pairs, total
+pixels, training steps, and mesh resolution. NVML reports device-wide
+utilization, VRAM use, and power. Next.js polls the queue and telemetry,
+reads only recorded CSV measurements, and embeds the Three.js model viewer.
+
+### Algorithm references
+
+- [NGP-RT occupancy distance grid](https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/03255.pdf)
+- [Felzenszwalb and Huttenlocher, Distance Transforms of Sampled Functions](https://cs.brown.edu/people/pfelzens/papers/dt-final.pdf)
+- [Rong and Tan, Jump Flooding in GPU](https://www.comp.nus.edu.sg/~tants/jfa/i3d06-submitted.pdf)

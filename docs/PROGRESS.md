@@ -47,6 +47,17 @@ Passed. The required sample training/render, dense mesh export, render timing,
 dense marching-cubes timing, and peak-memory samples are present. No Phase 1
 work has started.
 
-### Phase boundary
+## NeRF2Mesh Studio implementation
 
-Phase 1 has not started. Wait for explicit approval before proceeding.
+- Added an exact separable CUDA EDT and a 3D jump-flood comparison. Both
+  have CPU-reference checks and a raw timing and error CSV.
+- Added an optional cached distance field for the fused and unfused NeRF
+  renderers. A fixed sample lattice makes exact skips reproducible.
+- Added conservative occupancy tile culling, halo sampling, scan-based
+  triangle and edge emission, and vertex-colored GLB export.
+- Added the local FastAPI worker, PyCOLMAP camera solving, FIFO and
+  shortest-job-first policies, NVML telemetry, and Next.js/Three.js Studio.
+- Built the CUDA extension and Next.js production bundle. Verified Fox and
+  Spheres renders, the four mesh resolutions, and an end-to-end photo
+  upload in Firefox. See [Results](RESULTS.md) and [Demo commands](DEMO.md).
+- Verified the same four capture jobs under FIFO and shortest-job-first.

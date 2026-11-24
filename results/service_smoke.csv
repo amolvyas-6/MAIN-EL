@@ -1,0 +1,6 @@
+experiment,scene,resolution,variant,run,metric,value,unit
+capture_pipeline,fox,128³,studio,0,uploaded_photos,24,photos
+capture_pipeline,fox,128³,studio,0,registered_photos,24,photos
+capture_pipeline,fox,128³,studio,0,mesh_triangles,449844,triangles
+capture_pipeline,fox,128³,studio,0,preview_frames,6,images
+capture_pipeline,fox,128³,studio,0,glb_size,13953088,bytes
