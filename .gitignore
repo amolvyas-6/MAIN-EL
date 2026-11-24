@@ -7,7 +7,8 @@
 /figures
 /out
 /logs
-/results
+/results/*
+!/results/*.csv
 /tmp
 /venv
 /video
@@ -25,3 +26,6 @@
 __pycache__
 .DS_Store
 imgui.ini
+/.venv/
+/service/jobs/
+!/service/web/package.json

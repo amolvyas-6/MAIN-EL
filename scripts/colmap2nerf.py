@@ -214,12 +214,13 @@ if __name__ == "__main__":
 	with open(os.path.join(TEXT_FOLDER,"cameras.txt"), "r") as f:
 		camera_angle_x = math.pi / 2
 		for line in f:
+			line = line.strip()
 			# 1 SIMPLE_RADIAL 2048 1536 1580.46 1024 768 0.0045691
 			# 1 OPENCV 3840 2160 3178.27 3182.09 1920 1080 0.159668 -0.231286 -0.00123982 0.00272224
 			# 1 RADIAL 1920 1080 1665.1 960 540 0.0672856 -0.0761443
-			if line[0] == "#":
+			if not line or line.startswith("#"):
 				continue
-			els = line.split(" ")
+			els = line.split()
 			camera = {}
 			camera_id = int(els[0])
 			camera["w"] = float(els[2])
@@ -327,13 +328,13 @@ if __name__ == "__main__":
 		up = np.zeros(3)
 		for line in f:
 			line = line.strip()
-			if line[0] == "#":
+			if line.startswith("#"):
 				continue
 			i = i + 1
 			if i < SKIP_EARLY*2:
 				continue
 			if  i % 2 == 1:
-				elems=line.split(" ") # 1-4 is quat, 5-7 is trans, 9ff is filename (9, if filename contains no spaces)
+				elems=line.split() # 1-4 is quat, 5-7 is trans, 9ff is filename (9, if filename contains no spaces)
 				#name = str(PurePosixPath(Path(IMAGE_FOLDER, elems[9])))
 				# why is this requireing a relitive path while using ^
 				image_rel = os.path.relpath(IMAGE_FOLDER)
