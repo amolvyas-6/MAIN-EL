@@ -52,7 +52,6 @@ Commands below are run from the repository root. The compiler selection is the o
 
 ```bash
 cmake -S . -B build \
-  -DNGP_BUILD_WITH_GUI=OFF \
   -DNGP_BUILD_WITH_PYTHON_BINDINGS=ON \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=gcc-14 \

@@ -4442,10 +4442,11 @@ Testbed::Testbed(ETestbedMode mode) {
 
 			int gl_device = -1;
 			unsigned int device_count = 0;
-			if (cudaGLGetDevices(&device_count, &gl_device, 1, cudaGLDeviceListAll) == cudaSuccess) {
-				if (device_count > 0 && gl_device >= 0) {
-					set_cuda_device(gl_device);
-				}
+			if (cudaGLGetDevices(&device_count, &gl_device, 1, cudaGLDeviceListAll) != cudaSuccess) {
+				// Keep the current CUDA device and clear the failed OpenGL probe's error.
+				cudaGetLastError();
+			} else if (device_count > 0 && gl_device >= 0) {
+				set_cuda_device(gl_device);
 			}
 
 			glfwDestroyWindow(offscreen_context);

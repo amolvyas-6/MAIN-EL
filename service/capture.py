@@ -66,10 +66,53 @@ def export(directory, resolution):
     return json.loads((directory / "artifacts.json").read_text())
 
 
+def render_previews(testbed, directory):
+    import numpy as np
+    from scipy.spatial.transform import Rotation, Slerp
+    from common import write_image
+
+    dataset = testbed.nerf.training.dataset
+    if dataset.n_images < 2:
+        return []
+
+    cameras = []
+    for index in range(dataset.n_images):
+        testbed.set_camera_to_training_view(index)
+        cameras.append(testbed.camera_matrix.copy())
+
+    positions = np.asarray(cameras)[:, :, 3]
+    distances = np.linalg.norm(positions[:, None] - positions[None, :], axis=2)
+    distances[distances <= 1e-6] = np.inf
+    pairs = sorted({
+        tuple(sorted((a, b))) for a, b in enumerate(distances.argmin(axis=1)) if np.isfinite(distances[a, b])
+    })
+    if not pairs:
+        return []
+
+    testbed.render_ground_truth = False
+    frames = []
+    for index in np.linspace(0, len(pairs) - 1, min(6, len(pairs)), dtype=int):
+        a, b = pairs[index]
+        rotation = Rotation.from_matrix(np.stack((cameras[a][:, :3], cameras[b][:, :3])))
+        midpoint = np.empty((3, 4), dtype=np.float32)
+        midpoint[:, :3] = Slerp([0, 1], rotation)(0.5).as_matrix()
+        midpoint[:, 3] = (positions[a] + positions[b]) * 0.5
+
+        # Use one source camera's lens settings with the interpolated pose.
+        testbed.set_camera_to_training_view(a)
+        testbed.camera_matrix = midpoint
+        width, height = dataset.metadata[a].resolution
+        scale = 720 / max(width, height)
+        image = testbed.render(max(1, round(width * scale)), max(1, round(height * scale)), 8, True)
+        name = f"view-{len(frames)}.png"
+        write_image(str(directory / name), image)
+        frames.append(name)
+    return frames
+
+
 def export_artifacts(directory, resolution):
     sys.path[:0] = [str(BUILD), str(ROOT / "scripts")]
     import pyngp as ngp
-    from common import write_image
     from mesh_glb import write_glb
 
     testbed = ngp.Testbed()
@@ -81,16 +124,7 @@ def export_artifacts(directory, resolution):
     testbed.sparse_mesh_tile = 8
     mesh = testbed.compute_marching_cubes_mesh([resolution] * 3, thresh=2.5)
     triangles = write_glb(directory / "mesh.glb", mesh)
-    count = testbed.nerf.training.dataset.n_images
-    frames = []
-    for index in sorted({i * (count - 1) // 5 for i in range(6)}):
-        testbed.set_camera_to_training_view(index)
-        width, height = testbed.nerf.training.dataset.metadata[index].resolution
-        scale = 720 / max(width, height)
-        image = testbed.render(max(1, round(width * scale)), max(1, round(height * scale)), 8, True)
-        name = f"view-{len(frames)}.png"
-        write_image(str(directory / name), image)
-        frames.append(name)
+    frames = render_previews(testbed, directory)
     (directory / "artifacts.json").write_text(json.dumps({"triangles": triangles, "frames": frames}))
 
 

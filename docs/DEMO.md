@@ -6,6 +6,122 @@ training, sparse marching cubes, and NeRF rendering. Next.js shows the capture
 queue and recorded measurements. Three.js loads the GLB and supports orbit,
 zoom, and wireframe inspection.
 
+## What we improved
+
+CUDA launches many GPU workers, called threads. Each thread gets its own piece
+of the scene or image to work on.
+
+In the snippets, `__global__` marks a function launched on the GPU. `void`
+means it returns without a value. These GPU functions write their results
+into arrays such as `output` or `flags`. `int` is a whole number, `uint32_t`
+is a 32-bit non-negative whole number, and `float` can hold a fraction.
+`*` means the variable points to data in memory, and `const` marks data the
+function reads without changing it.
+
+### 1. Euclidean distance transform (EDT)
+
+Imagine the scene as a grid of tiny cubes. Before rendering, we make a table
+that tells each cube how far its center is from the center of the nearest
+occupied cube. Many rays can reuse that table. [src/distance_transform.cu](../src/distance_transform.cu)
+
+```cuda
+__global__ void transform_axis(int lines, int side, int axis, const int* input, int* output)
+```
+
+`distance_transform` launches `transform_axis` three times, once for each
+direction (X, Y, and Z). Each pass adds the squared distance along that
+direction and keeps the smallest total for each cube. If an occupied cube is
+three steps away in X and four in Y at the same height, its squared distance
+is `3² + 4² = 25`. Taking the square root gives a straight-line distance of
+`5` steps. This approach lets GPU threads work on different lines of cubes
+at the same time during each pass.
+
+- `lines` is how many lines of cubes this pass processes.
+- `side` is how many cubes fit along one side of the grid.
+- `axis` selects the direction. `0` is X, `1` is Y, and `2` is Z.
+- `input` holds the starting grid values on the first pass and the previous
+  pass's squared distances after that. `output` receives this pass's squared
+  distances. The square root is taken after all three passes.
+
+### 2. Distance-guided ray skipping
+
+To draw a pixel, we trace a ray from the camera into the scene and check
+points along its path. The GPU traces many rays in parallel. [Skip logic](../include/neural-graphics-primitives/nerf_device.cuh) · [Fused renderer](../include/neural-graphics-primitives/fused_kernels/render_nerf.cuh)
+
+```cuda
+float safe = distance_skip_bound(
+    pos, ray.d, idir, mip, lookup_mip, marching.distances, next_boundary
+);
+```
+
+In an empty cube, `distance_skip_bound` reads the distance table and leaves
+a safety margin because the distances are measured from cube centers. If the
+next cube face is one unit away and the safe limit is five units, the renderer
+can jump directly to a sample four units ahead, if there is one there. The
+checks in between are skipped. The usual move to the next cube is still used
+when the safe limit is too short.
+
+- `safe` holds the upper limit returned by `distance_skip_bound` for a jump
+  through empty space.
+- `pos` is the ray's current 3D position. `ray.d` is its direction.
+- `idir` is `1` divided by each part of `ray.d`. It helps calculate where the
+  ray meets a grid boundary.
+- `mip` selects the grid level used to read the distance table. `lookup_mip`
+  is the original grid level used to check occupancy. Its boundaries help
+  limit the jump. Each level covers a different amount of space.
+- `marching.distances` is the distance table built by the EDT.
+- `next_boundary` is the distance to the next cube face along the ray. A
+  longer jump must beat this distance.
+
+### 3. Sparse marching cubes
+
+A mesh is a surface made of triangles. We divide the scene into chunks so the
+GPU can decide where to look for that surface. [src/sparse_marching_cubes.cu](../src/sparse_marching_cubes.cu)
+
+```cuda
+__global__ void occupancy_flags(
+    uint32_t count, Lattice lattice, const float* occupancy, uint32_t max_mip, uint32_t* flags
+)
+```
+
+`occupancy_flags` uses the model's existing map of occupied space. One GPU
+thread checks each chunk. If three chunks get flags `[0, 1, 0]`, only the middle
+chunk goes on to the more expensive density calculation. This saves the work
+of calculating densities in empty chunks and the memory to store them. Later
+stages count triangles where density crosses a cutoff and use a running total
+to give each cell its own space to write them.
+
+- `count` is the total number of chunks to check.
+- `lattice` is a `Lattice` object that describes the grid, chunk size, and
+  where the grid sits in the scene.
+- `occupancy` holds the stored density values used to check for empty space.
+- `max_mip` is the largest grid level the function can check.
+- `flags` stores one answer per chunk. `1` means keep it for a closer check.
+  `0` means skip it.
+
+### How we schedule capture jobs
+
+The service finishes one capture job before picking the next. **First In,
+First Out (FIFO)** picks the job that arrived first. **Shortest Job First
+(SJF)** picks the waiting job with the smallest estimated workload. The estimate
+uses the number and size of the photos, the training steps, and the requested
+mesh resolution. Ties go to the earlier job. [service/scheduler.py](../service/scheduler.py)
+
+```python
+job = min(waiting, key=POLICIES[self.policy])
+```
+
+If a large capture arrives first and a small capture arrives second, FIFO
+chooses the large one when both are waiting. SJF lets the small one go first
+if it has the lower estimated workload.
+
+- `waiting` is the list of jobs still in the queue. `job` is the one chosen
+  to run next.
+- `POLICIES` holds the ranking rules. `self.policy` is the current setting
+  (`fifo` or `sjf`). `POLICIES[self.policy]` looks up the matching rule.
+- `min` picks the job that ranks first. `key=` tells it which rule to use
+  when ranking the jobs.
+
 ## Build and start
 
 Run from the repository root on the NVIDIA machine. The build uses the existing
@@ -51,7 +167,8 @@ The service is designed for a single API process with a single GPU worker.
    `128³` mesh grid and a short training run for an in-class capture. Show a
    completed capture while the new job is queued or training.
 2. Open the completed job. Use the tabs above the preview to orbit the shaded
-   mesh, reveal the triangles in Wireframe, and scrub through NeRF views.
+   mesh, reveal the triangles in Wireframe, and scrub through NeRF views rendered
+   from camera poses between nearby capture photos.
    Use **Download GLB** to save the mesh.
 3. Open Measurements. **Ray skipping** shows **No skipping** and
    **Distance-guided skipping** side by side. Describe the change in

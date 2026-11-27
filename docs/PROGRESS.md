@@ -65,3 +65,8 @@ work has started.
   completed capture opens.
 - Kept the mesh export subprocess headless with GUI-enabled Instant-NGP builds
   to avoid probing the desktop's OpenGL device during export.
+- Rendered Studio previews from poses between nearby capture cameras so the
+  viewer shows new angles of the trained NeRF.
+- Cleared CUDA's last error when the optional desktop OpenGL device probe
+  fails, so later distance-transform and sparse-scan checks can report their
+  own errors. The GUI-enabled rebuild and rerun are pending.
