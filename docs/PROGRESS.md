@@ -61,3 +61,5 @@ work has started.
   Spheres renders, the four mesh resolutions, and an end-to-end photo
   upload in Firefox. See [Results](RESULTS.md) and [Demo commands](DEMO.md).
 - Verified the same four capture jobs under FIFO and shortest-job-first.
+- Moved the preview tabs above the viewport so NeRF views are visible when a
+  completed capture opens.

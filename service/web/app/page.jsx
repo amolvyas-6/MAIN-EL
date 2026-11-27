@@ -76,16 +76,28 @@ function Viewer({ job }) {
   const [mode, setMode] = useState("mesh");
   const [frame, setFrame] = useState(0);
   const ready = job?.status === "complete";
-  const name = job?.frames?.[frame];
+  const frames = job?.frames ?? [];
+  const name = frames[frame];
   const activeStage = stages.indexOf(job?.status);
   return <section className="viewer-panel">
     <div className="panel-heading">
       <div><h2>{job?.label || "Reconstruction viewer"}</h2>{job && <p>{labels[job.status]}</p>}</div>
       {ready && <a className="button" href={artifact(job, "mesh.glb")}>Download GLB</a>}
     </div>
+    {ready && <div className="viewer-controls">
+      <div className="tabs" role="group" aria-label="Preview mode">
+        {[["mesh", "Shaded"], ["wireframe", "Wireframe"], ["render", "NeRF views"]].map(([id, label]) =>
+          <button key={id} aria-pressed={mode === id} onClick={() => setMode(id)}>{label}</button>)}
+      </div>
+      {mode === "render" ? name && <label className="frames">View {frame + 1} of {frames.length}
+        <input aria-label="NeRF viewpoint" type="range" min="0" max={frames.length - 1} value={frame}
+          onChange={(event) => setFrame(Number(event.target.value))} /></label>
+        : <span>{format(job.triangles)} triangles</span>}
+    </div>}
     <div className="viewport">
       {ready ? mode === "render" ? (
-        <img className="nerf-render" src={artifact(job, name)} alt={`NeRF render ${frame + 1}`} />
+        name ? <img className="nerf-render" src={artifact(job, name)} alt={`NeRF render ${frame + 1}`} />
+          : <div className="viewport-empty"><strong>This capture has no saved NeRF views.</strong></div>
       ) : <MeshView url={artifact(job, "mesh.glb")} wireframe={mode === "wireframe"} /> : (
         <div className="viewport-empty">
           <div className="coordinate-mark" aria-hidden="true"><span /><span /><span /></div>
@@ -95,17 +107,8 @@ function Viewer({ job }) {
         </div>
       )}
     </div>
-    {ready ? <div className="viewer-controls">
-      <div className="tabs" aria-label="Preview mode">
-        {[["mesh", "Shaded"], ["wireframe", "Wireframe"], ["render", "NeRF views"]].map(([id, label]) =>
-          <button key={id} aria-pressed={mode === id} onClick={() => setMode(id)}>{label}</button>)}
-      </div>
-      {mode === "render" ? <label className="frames">View {frame + 1} of {job.frames.length}
-        <input aria-label="NeRF viewpoint" type="range" min="0" max={job.frames.length - 1} value={frame}
-          onChange={(event) => setFrame(Number(event.target.value))} /></label>
-        : <span>{format(job.triangles)} triangles</span>}
-    </div> : job?.status === "failed" ? <div className="viewer-controls"><a href={artifact(job, "worker.log")}>Open worker log</a></div>
-      : job && <ol className="progress-stages" aria-label="Reconstruction stages">
+    {job?.status === "failed" ? <div className="viewer-controls"><a href={artifact(job, "worker.log")}>Open worker log</a></div>
+      : job && !ready && <ol className="progress-stages" aria-label="Reconstruction stages">
         {stages.map((stage, index) => <li key={stage} className={index <= activeStage ? "reached" : ""}
           aria-current={index === activeStage ? "step" : undefined}>{labels[stage]}</li>)}
       </ol>}

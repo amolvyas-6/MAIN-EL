@@ -50,8 +50,9 @@ The service is designed for a single API process with a single GPU worker.
    `data/nerf/fox/images/` directory is a reproducible photo source. Use the
    `128³` mesh grid and a short training run for an in-class capture. Show a
    completed capture while the new job is queued or training.
-2. Open the completed job. Orbit the shaded mesh, switch to Wireframe to reveal
-   the triangles, then scrub the NeRF views and download the GLB.
+2. Open the completed job. Use the tabs above the preview to orbit the shaded
+   mesh, reveal the triangles in Wireframe, and scrub through NeRF views.
+   Use **Download GLB** to save the mesh.
 3. Open Measurements. **Ray skipping** shows **No skipping** and
    **Distance-guided skipping** side by side. Describe the change in
    empty-space advances separately from the change in frame time.
