@@ -63,3 +63,5 @@ work has started.
 - Verified the same four capture jobs under FIFO and shortest-job-first.
 - Moved the preview tabs above the viewport so NeRF views are visible when a
   completed capture opens.
+- Kept the mesh export subprocess headless with GUI-enabled Instant-NGP builds
+  to avoid probing the desktop's OpenGL device during export.

@@ -10,11 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = Path(os.getenv("NGP_BUILD_DIR", ROOT / "build")).resolve()
 
 
-def run(directory, *arguments):
+def run(directory, *arguments, env=None):
     with (directory / "worker.log").open("a", encoding="utf-8") as log:
         log.write(f"\n{arguments[0]} {arguments[1]}\n")
         log.flush()
-        subprocess.run(arguments, cwd=directory, stdout=log, stderr=subprocess.STDOUT,
+        subprocess.run(arguments, cwd=directory, env=env, stdout=log, stderr=subprocess.STDOUT,
                        stdin=subprocess.DEVNULL, check=True)
 
 
@@ -56,8 +56,13 @@ def train(directory, steps):
 
 
 def export(directory, resolution):
-    # Run exports in a child so CUDA arenas are released before the next job.
-    run(directory, sys.executable, str(Path(__file__).resolve()), "export", str(directory), str(resolution))
+    # Keep export headless even when pyngp was built with desktop GUI support.
+    # Otherwise Testbed can probe the desktop OpenGL device during initialization.
+    environment = os.environ.copy()
+    environment.pop("DISPLAY", None)
+    environment.pop("WAYLAND_DISPLAY", None)
+    # The child also releases its CUDA allocations before the next job.
+    run(directory, sys.executable, str(Path(__file__).resolve()), "export", str(directory), str(resolution), env=environment)
     return json.loads((directory / "artifacts.json").read_text())
 
 
